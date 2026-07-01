@@ -4,6 +4,7 @@ import * as Joi from 'joi';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TelegramModule } from './telegram/telegram.module';
+import { NotionModule } from './notion/notion.module';
 
 @Module({
   imports: [
@@ -22,6 +23,8 @@ import { TelegramModule } from './telegram/telegram.module';
         NOTION_API_KEY: Joi.string().optional(),
         NOTION_DB_TIPOS_DIA: Joi.string().optional(),
         NOTION_DB_PLANTILLAS: Joi.string().optional(),
+        NOTION_DB_TIPO_ACTIVIDAD: Joi.string().optional(),
+        NOTION_DB_MENU_SEMANA: Joi.string().optional(),
         NOTION_DB_REGISTRO_DIARIO: Joi.string().optional(),
         NOTION_DB_REGISTRO_ACTIVIDADES: Joi.string().optional(),
         NOTION_DB_OBJETIVOS: Joi.string().optional(),
@@ -33,6 +36,7 @@ import { TelegramModule } from './telegram/telegram.module';
       }),
     }),
     TelegramModule,
+    NotionModule,
   ],
   controllers: [AppController],
   providers: [AppService],

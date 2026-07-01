@@ -1,20 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { InjectBot } from 'nestjs-telegraf';
 import { Markup, Telegraf } from 'telegraf';
-import { CONFIRMACION_LABELS, DIAS_LABELS } from '../constants/telegram-callbacks.constant';
+import { CONFIRMACION_LABELS } from '../constants/telegram-callbacks.constant';
+import { NotionService } from '../../notion/services/notion.service';
 
 @Injectable()
 export class TelegramService {
-  constructor(@InjectBot() private readonly bot: Telegraf) {}
+  constructor(
+    @InjectBot() private readonly bot: Telegraf,
+    private readonly notionService: NotionService,
+  ) {}
 
   async sendMessage(chatId: string | number, text: string) {
     return this.bot.telegram.sendMessage(chatId, text);
   }
 
-  async sendMessageConfirmation(
-    chatId: string | number,
-    text: string,
-  ) {
+  async sendMessageConfirmation(chatId: string | number, text: string) {
     return this.bot.telegram.sendMessage(
       chatId,
       text,
@@ -27,12 +28,14 @@ export class TelegramService {
   }
 
   async sendMessagePlanification(chatId: string | number, text: string) {
+    const tiposDia = await this.notionService.getTiposDia();
+
     return this.bot.telegram.sendMessage(
       chatId,
       text,
       Markup.inlineKeyboard(
-        Object.entries(DIAS_LABELS).map(([valor, label]) =>
-          Markup.button.callback(label, `planificacion:${valor}`),
+        tiposDia.map((tipoDia) =>
+          Markup.button.callback(tipoDia.nombre, `planificacion:${tipoDia.id}`),
         ),
       ),
     );

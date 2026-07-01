@@ -1,14 +1,16 @@
 import { Ctx, Start, Update, Action, Command } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { TelegramService } from '../services/telegram.service';
-import {
-  CONFIRMACION_LABELS,
-  DIAS_LABELS,
-} from '../constants/telegram-callbacks.constant';
+import { CONFIRMACION_LABELS } from '../constants/telegram-callbacks.constant';
+import { NotionService } from '../../notion/services/notion.service';
+import { PlantillaActividadOutputDto } from '../../notion/dto/output/plantilla-actividad.output.dto';
 
 @Update()
 export class TelegramUpdate {
-  constructor(private readonly telegramService: TelegramService) {}
+  constructor(
+    private readonly telegramService: TelegramService,
+    private readonly notionService: NotionService,
+  ) {}
 
   @Start()
   async onStart(@Ctx() ctx: Context) {
@@ -40,17 +42,42 @@ export class TelegramUpdate {
 
   @Action(/^planificacion:/)
   async onPlanificacionSeleccion(@Ctx() ctx: Context) {
-    await this.handleSelectableCallback(ctx, DIAS_LABELS);
+    const tiposDia = await this.notionService.getTiposDia();
+    const labels = Object.fromEntries(
+      tiposDia.map((tipoDia) => [tipoDia.id, tipoDia.nombre]),
+    );
+    const tipoDiaId = await this.handleSelectableCallback(ctx, labels);
+    if (!tipoDiaId || !ctx.chat) return;
+
+    const plantillas =
+      await this.notionService.getPlantillasActividades(tipoDiaId);
+
+    await this.telegramService.sendMessage(
+      ctx.chat.id,
+      this.formatPlantillas(plantillas),
+    );
   }
 
+  private formatPlantillas(plantillas: PlantillaActividadOutputDto[]): string {
+    if (plantillas.length === 0) {
+      return 'No hay actividades planificadas para este tipo de día.';
+    }
+
+    return plantillas
+      .map(
+        (plantilla) =>
+          `${plantilla.horaInicio}-${plantilla.horaFin}\n${plantilla.nombre}\n${plantilla.tipoActividad.join(', ')}\n-`,
+      )
+      .join('\n');
+  }
 
   private async handleSelectableCallback(
     ctx: Context,
     labels: Record<string, string>,
     text?: string,
-  ) {
+  ): Promise<string | undefined> {
     const callbackQuery = ctx.callbackQuery;
-    if (!callbackQuery || !('data' in callbackQuery)) return;
+    if (!callbackQuery || !('data' in callbackQuery)) return undefined;
 
     await ctx.answerCbQuery();
 
@@ -60,6 +87,10 @@ export class TelegramUpdate {
     const message = callbackQuery.message;
     const originalText = message && 'text' in message ? message.text : '';
 
-    await ctx.editMessageText(`${originalText + (text ? text : '')}\n\n✅ ${label}`);
+    await ctx.editMessageText(
+      `${originalText + (text ? text : '')}\n\n✅ ${label}`,
+    );
+
+    return valor;
   }
 }

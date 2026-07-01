@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { TelegramService } from './services/telegram.service';
 import { TelegramUpdate } from './updates/telegram.update';
+import { NotionModule } from '../notion/notion.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { TelegramUpdate } from './updates/telegram.update';
       }),
       inject: [ConfigService],
     }),
+    NotionModule,
   ],
   providers: [TelegramService, TelegramUpdate],
   exports: [TelegramService],
