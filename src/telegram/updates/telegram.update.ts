@@ -1,6 +1,10 @@
-import { Ctx, Start, Update, On, Command } from 'nestjs-telegraf';
+import { Ctx, Start, Update, Action, Command } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { TelegramService } from '../services/telegram.service';
+import {
+  CONFIRMACION_LABELS,
+  DIAS_LABELS,
+} from '../constants/telegram-callbacks.constant';
 
 @Update()
 export class TelegramUpdate {
@@ -11,45 +15,51 @@ export class TelegramUpdate {
     await ctx.reply('¡Hola! El bot está conectado correctamente.');
   }
 
-  @Command('botones')
-  async onBotones(@Ctx() ctx: Context) {
+  @Command('plan')
+  async onPlanificacion(@Ctx() ctx: Context) {
     if (!ctx.chat) return;
-
-    await this.telegramService.sendMessageWithButtons(
+    await this.telegramService.sendMessagePlanification(
       ctx.chat.id,
-      'Elegí una opción:',
-      [
-        { text: 'Confirmar', callbackData: 'Confirmar' },
-        { text: 'Cancear', callbackData: 'Cancelar' },
-      ],
+      '¡Bienvenido a la planificación!',
     );
   }
 
-  @On('callback_query')
-  async onCallbackQuery(@Ctx() ctx: Context) {
+  @Command('conf')
+  async onSendConfirmation(@Ctx() ctx: Context) {
+    if (!ctx.chat) return;
+    await this.telegramService.sendMessageConfirmation(
+      ctx.chat.id,
+      'Elige una opción:',
+    );
+  }
+
+  @Action(/^confirmacion:/)
+  async onConfirmation(@Ctx() ctx: Context) {
+    await this.handleSelectableCallback(ctx, CONFIRMACION_LABELS);
+  }
+
+  @Action(/^planificacion:/)
+  async onPlanificacionSeleccion(@Ctx() ctx: Context) {
+    await this.handleSelectableCallback(ctx, DIAS_LABELS);
+  }
+
+
+  private async handleSelectableCallback(
+    ctx: Context,
+    labels: Record<string, string>,
+    text?: string,
+  ) {
     const callbackQuery = ctx.callbackQuery;
     if (!callbackQuery || !('data' in callbackQuery)) return;
 
     await ctx.answerCbQuery();
 
+    const [, valor] = callbackQuery.data.split(':');
+    const label = labels[valor] ?? valor;
+
     const message = callbackQuery.message;
-    const keyboard =
-      message && 'reply_markup' in message
-        ? message.reply_markup?.inline_keyboard
-        : undefined;
-
-    const selectedButton = keyboard
-      ?.flat()
-      .find(
-        (button) =>
-          'callback_data' in button &&
-          button.callback_data === callbackQuery.data,
-      );
-    if (!selectedButton) return;
-
     const originalText = message && 'text' in message ? message.text : '';
 
-    await ctx.editMessageText(`${originalText}\n\n✅ ${selectedButton.text}`);
+    await ctx.editMessageText(`${originalText + (text ? text : '')}\n\n✅ ${label}`);
   }
 }
-
