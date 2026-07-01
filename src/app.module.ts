@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import * as Joi from 'joi';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { TelegramModule } from './telegram/telegram.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { AppService } from './app.service';
         RETRY_INTERVAL_MIN: Joi.number().default(5),
       }),
     }),
+    TelegramModule,
   ],
   controllers: [AppController],
   providers: [AppService],
