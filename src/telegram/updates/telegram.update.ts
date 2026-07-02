@@ -52,10 +52,29 @@ export class TelegramUpdate {
     const plantillas =
       await this.notionService.getPlantillasActividades(tipoDiaId);
 
-    await this.telegramService.sendMessage(
+    await this.telegramService.sendMessagePlanConValidar(
       ctx.chat.id,
       this.formatPlantillas(plantillas),
+      tipoDiaId,
     );
+  }
+
+  @Action(/^validacion:/)
+  async onValidacion(@Ctx() ctx: Context) {
+    const callbackQuery = ctx.callbackQuery;
+    if (!callbackQuery || !('data' in callbackQuery)) return;
+
+    await ctx.answerCbQuery();
+
+    const [, tipoDiaId] = callbackQuery.data.split(':');
+    const plantillas =
+      await this.notionService.getPlantillasActividades(tipoDiaId);
+    await this.notionService.crearAgenda(tipoDiaId, plantillas);
+
+    const message = callbackQuery.message;
+    const originalText = message && 'text' in message ? message.text : '';
+
+    await ctx.editMessageText(`${originalText}\n\n✅ Validado`);
   }
 
   private formatPlantillas(plantillas: PlantillaActividadOutputDto[]): string {

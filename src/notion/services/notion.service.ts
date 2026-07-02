@@ -16,7 +16,10 @@ import {
 import { TipoDiaInputDto } from '../dto/input/tipo-dia.input.dto';
 import { TipoDiaOutputDto } from '../dto/output/tipo-dia.output.dto';
 import { PlantillaActividadInputDto } from '../dto/input/plantilla-actividad.input.dto';
-import { PlantillaActividadOutputDto } from '../dto/output/plantilla-actividad.output.dto';
+import {
+  PlantillaActividadOutputDto,
+  TareaConHorarioDto,
+} from '../dto/output/plantilla-actividad.output.dto';
 import { TipoActividadInputDto } from '../dto/input/tipo-actividad.input.dto';
 import { TipoActividadOutputDto } from '../dto/output/tipo-actividad.output.dto';
 import { MenuDiaInputDto } from '../dto/input/menu-dia.input.dto';
@@ -93,6 +96,141 @@ export class NotionService {
       .sort((a, b) => a.horaInicio.localeCompare(b.horaInicio));
   }
 
+  async crearAgenda(
+    tipoDiaId: string,
+    actividades: PlantillaActividadOutputDto[],
+  ): Promise<void> {
+    const dataSourceId = await this.getDataSourceId(
+      this.configService.getOrThrow<string>('NOTION_DB_AGENDA'),
+    );
+    const fecha = this.fechaDeHoy();
+
+    const tiposActividad = await this.getTiposActividad();
+    const idPorNombreTipoActividad = new Map(
+      tiposActividad.map((tipoActividad) => [
+        tipoActividad.nombre,
+        tipoActividad.id,
+      ]),
+    );
+
+    const registros = actividades.flatMap((actividad) => {
+      const tipoActividadIds = actividad.tipoActividad
+        .map((nombre) => idPorNombreTipoActividad.get(nombre))
+        .filter((id): id is string => Boolean(id));
+
+      const items =
+        actividad.tareas.length > 0
+          ? actividad.tareas
+          : [
+              {
+                nombre: actividad.nombre,
+                horaInicio: actividad.horaInicio,
+                horaFin: actividad.horaFin,
+              },
+            ];
+
+      return items.map((item) => ({ item, tipoActividadIds }));
+    });
+
+    await Promise.all(
+      registros.map(({ item, tipoActividadIds }) =>
+        this.notion.pages.create({
+          parent: { data_source_id: dataSourceId },
+          properties: {
+            Fecha: {
+              title: [{ text: { content: fecha } }],
+            },
+            Nombre: {
+              rich_text: [{ text: { content: item.nombre } }],
+            },
+            Hora_Inicio: {
+              rich_text: [{ text: { content: item.horaInicio } }],
+            },
+            Hora_Fin: {
+              rich_text: [{ text: { content: item.horaFin } }],
+            },
+            Tipo_Dia: {
+              relation: [{ id: tipoDiaId }],
+            },
+            Tipo_Actividad: {
+              relation: tipoActividadIds.map((id) => ({ id })),
+            },
+            Fecha_Calendario: {
+              date: { start: fecha },
+            },
+          },
+        }),
+      ),
+    );
+  }
+
+  async registrarEventoBitacora(
+    agendaId: string,
+    nombreActividad: string,
+    estado: string,
+  ): Promise<void> {
+    const dataSourceId = await this.getDataSourceId(
+      this.configService.getOrThrow<string>('NOTION_DB_BITACORA'),
+    );
+    const fecha = this.fechaDeHoy();
+    const orden =
+      (await this.contarEventosBitacora(dataSourceId, agendaId)) + 1;
+
+    await this.notion.pages.create({
+      parent: { data_source_id: dataSourceId },
+      properties: {
+        Fecha: {
+          title: [{ text: { content: fecha } }],
+        },
+        Nombre: {
+          rich_text: [{ text: { content: nombreActividad } }],
+        },
+        Agenda: {
+          relation: [{ id: agendaId }],
+        },
+        Estado: {
+          select: { name: estado },
+        },
+        Hora: {
+          rich_text: [{ text: { content: this.horaDeAhora() } }],
+        },
+        Orden: {
+          number: orden,
+        },
+      },
+    });
+  }
+
+  private async contarEventosBitacora(
+    dataSourceId: string,
+    agendaId: string,
+  ): Promise<number> {
+    const pages = await collectPaginatedAPI(this.notion.dataSources.query, {
+      data_source_id: dataSourceId,
+      filter: {
+        property: 'Agenda',
+        relation: { contains: agendaId },
+      },
+    });
+
+    return pages.length;
+  }
+
+  private fechaDeHoy(): string {
+    const hoy = new Date();
+    const anio = hoy.getFullYear();
+    const mes = String(hoy.getMonth() + 1).padStart(2, '0');
+    const dia = String(hoy.getDate()).padStart(2, '0');
+    return `${anio}-${mes}-${dia}`;
+  }
+
+  private horaDeAhora(): string {
+    const ahora = new Date();
+    const horas = String(ahora.getHours()).padStart(2, '0');
+    const minutos = String(ahora.getMinutes()).padStart(2, '0');
+    return `${horas}:${minutos}`;
+  }
+
   async getTareas(): Promise<TareaOutputDto[]> {
     const dataSourceId = await this.getDataSourceId(
       this.configService.getOrThrow<string>('NOTION_DB_TAREAS'),
@@ -113,14 +251,55 @@ export class NotionService {
       tareas.map((tarea) => [tarea.id, tarea.estado]),
     );
 
-    return tareas.filter(
+    const candidatas = tareas.filter(
       (tarea) =>
-        tarea.contexto === contexto &&
-        tarea.estado !== ESTADO_TAREA_COMPLETADO &&
-        tarea.dependeDeIds.every(
-          (id) => estadoPorId.get(id) === ESTADO_TAREA_COMPLETADO,
-        ),
+        tarea.contexto === contexto && tarea.estado !== ESTADO_TAREA_COMPLETADO,
     );
+    const candidataPorId = new Map(
+      candidatas.map((tarea) => [tarea.id, tarea]),
+    );
+
+    const puedeHacerseHoy = (
+      tarea: TareaOutputDto,
+      enProgreso: Set<string>,
+    ): boolean => {
+      if (enProgreso.has(tarea.id)) return false;
+      enProgreso.add(tarea.id);
+
+      return tarea.dependeDeIds.every((id) => {
+        if (estadoPorId.get(id) === ESTADO_TAREA_COMPLETADO) return true;
+        const dependencia = candidataPorId.get(id);
+        return dependencia ? puedeHacerseHoy(dependencia, enProgreso) : false;
+      });
+    };
+
+    const elegibles = candidatas.filter((tarea) =>
+      puedeHacerseHoy(tarea, new Set()),
+    );
+
+    return this.ordenarPorDependencias(elegibles);
+  }
+
+  private ordenarPorDependencias(tareas: TareaOutputDto[]): TareaOutputDto[] {
+    const porId = new Map(tareas.map((tarea) => [tarea.id, tarea]));
+    const ordenadas: TareaOutputDto[] = [];
+    const visitadas = new Set<string>();
+
+    const visitar = (tarea: TareaOutputDto) => {
+      if (visitadas.has(tarea.id)) return;
+      visitadas.add(tarea.id);
+
+      for (const id of tarea.dependeDeIds) {
+        const dependencia = porId.get(id);
+        if (dependencia) visitar(dependencia);
+      }
+
+      ordenadas.push(tarea);
+    };
+
+    for (const tarea of tareas) visitar(tarea);
+
+    return ordenadas;
   }
 
   async getMenuDelDia(dia: string): Promise<MenuDiaOutputDto | undefined> {
@@ -185,18 +364,24 @@ export class NotionService {
         ? nombre.title.map((text) => text.plain_text).join('')
         : '';
 
+    const horaFin = this.sumarMinutos(horaInicio, minutos);
+
+    const { nombre: nombreResuelto, tareas } = this.resolverNombreActividad(
+      nombreOriginal,
+      nombresTipoActividad,
+      menuDelDia,
+      tareasPorContexto,
+      horaInicio,
+      horaFin,
+    );
+
     return {
       id: page.id,
-      nombre: this.resolverNombreActividad(
-        nombreOriginal,
-        nombresTipoActividad,
-        menuDelDia,
-        tareasPorContexto,
-        horaInicio,
-      ),
+      nombre: nombreResuelto,
       horaInicio,
-      horaFin: this.sumarMinutos(horaInicio, minutos),
+      horaFin,
       tipoActividad: nombresTipoActividad,
+      tareas,
     };
   }
 
@@ -206,8 +391,10 @@ export class NotionService {
     menuDelDia: MenuDiaOutputDto | undefined,
     tareasPorContexto: Map<string, TareaOutputDto[]>,
     horaInicio: string,
-  ): string {
+    horaFin: string,
+  ): { nombre: string; tareas: TareaConHorarioDto[] } {
     const segmentos: string[] = [];
+    let tareasConHorario: TareaConHorarioDto[] = [];
 
     if (menuDelDia) {
       for (const tipo of nombresTipoActividad) {
@@ -226,29 +413,52 @@ export class NotionService {
       const tareas = tareasPorContexto.get(contexto) ?? [];
       if (tareas.length === 0) continue;
 
-      segmentos.push(this.formatearTareasConHorario(tareas, horaInicio));
+      const listado = this.formatearTareasConHorario(
+        tareas,
+        horaInicio,
+        horaFin,
+      );
+      tareasConHorario = tareasConHorario.concat(listado);
+      segmentos.push(
+        listado
+          .map(
+            (tarea) => `${tarea.horaInicio}-${tarea.horaFin} ${tarea.nombre}`,
+          )
+          .join('\n'),
+      );
     }
 
-    return segmentos.length > 0 ? segmentos.join('\n') : nombreOriginal;
+    return {
+      nombre: segmentos.length > 0 ? segmentos.join('\n') : nombreOriginal,
+      tareas: tareasConHorario,
+    };
   }
 
   private formatearTareasConHorario(
     tareas: TareaOutputDto[],
     horaInicio: string,
-  ): string {
+    horaFin: string,
+  ): TareaConHorarioDto[] {
+    const limiteMin = this.minutosDesdeTexto(horaFin);
     let horaActual = horaInicio;
+    const resultado: TareaConHorarioDto[] = [];
 
-    return tareas
-      .map((tarea) => {
-        const horaFinTarea = this.sumarMinutos(
-          horaActual,
-          tarea.tiempoEstimadoMin,
-        );
-        const linea = `${horaActual}-${horaFinTarea} ${tarea.nombre}`;
-        horaActual = horaFinTarea;
-        return linea;
-      })
-      .join('\n');
+    for (const tarea of tareas) {
+      const horaFinTarea = this.sumarMinutos(
+        horaActual,
+        tarea.tiempoEstimadoMin,
+      );
+      if (this.minutosDesdeTexto(horaFinTarea) > limiteMin) break;
+
+      resultado.push({
+        nombre: tarea.nombre,
+        horaInicio: horaActual,
+        horaFin: horaFinTarea,
+      });
+      horaActual = horaFinTarea;
+    }
+
+    return resultado;
   }
 
   private toTareaDto(page: TareaInputDto): TareaOutputDto {

@@ -27,6 +27,20 @@ export class TelegramService {
     );
   }
 
+  async sendMessagePlanConValidar(
+    chatId: string | number,
+    text: string,
+    tipoDiaId: string,
+  ) {
+    return this.bot.telegram.sendMessage(
+      chatId,
+      text,
+      Markup.inlineKeyboard([
+        Markup.button.callback('Validar', `validacion:${tipoDiaId}`),
+      ]),
+    );
+  }
+
   async sendMessagePlanification(chatId: string | number, text: string) {
     const tiposDia = await this.notionService.getTiposDia();
 
