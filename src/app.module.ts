@@ -5,6 +5,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TelegramModule } from './telegram/telegram.module';
 import { NotionModule } from './notion/notion.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { NotionModule } from './notion/notion.module';
     }),
     TelegramModule,
     NotionModule,
+    SchedulerModule,
   ],
   controllers: [AppController],
   providers: [AppService],

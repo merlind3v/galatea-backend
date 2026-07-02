@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectBot } from 'nestjs-telegraf';
 import { Markup, Telegraf } from 'telegraf';
 import { CONFIRMACION_LABELS } from '../constants/telegram-callbacks.constant';
@@ -9,10 +10,44 @@ export class TelegramService {
   constructor(
     @InjectBot() private readonly bot: Telegraf,
     private readonly notionService: NotionService,
+    private readonly configService: ConfigService,
   ) {}
 
   async sendMessage(chatId: string | number, text: string) {
     return this.bot.telegram.sendMessage(chatId, text);
+  }
+
+  async sendMessageProactivo(text: string) {
+    const chatId = this.configService.getOrThrow<string>('TELEGRAM_CHAT_ID');
+    return this.sendMessage(chatId, text);
+  }
+
+  async sendMessageConfirmarInicio(agendaId: string, nombreActividad: string) {
+    const chatId = this.configService.getOrThrow<string>('TELEGRAM_CHAT_ID');
+
+    return this.bot.telegram.sendMessage(
+      chatId,
+      `⏰ ¿Arrancaste con: ${nombreActividad}?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback('✅ Sí, arranqué', `inicioconfirm:${agendaId}`),
+      ]),
+    );
+  }
+
+  async sendMessageCheckpointFin(agendaId: string, nombreActividad: string) {
+    const chatId = this.configService.getOrThrow<string>('TELEGRAM_CHAT_ID');
+
+    return this.bot.telegram.sendMessage(
+      chatId,
+      `⏱ ¿Cómo va "${nombreActividad}"?`,
+      Markup.inlineKeyboard([
+        Markup.button.callback(
+          '✅ Completado',
+          `finconfirm:completar:${agendaId}`,
+        ),
+        Markup.button.callback('⏱ Extender', `finconfirm:extender:${agendaId}`),
+      ]),
+    );
   }
 
   async sendMessageConfirmation(chatId: string | number, text: string) {

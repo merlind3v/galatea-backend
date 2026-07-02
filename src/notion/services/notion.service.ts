@@ -26,6 +26,8 @@ import { MenuDiaInputDto } from '../dto/input/menu-dia.input.dto';
 import { MenuDiaOutputDto } from '../dto/output/menu-dia.output.dto';
 import { TareaInputDto } from '../dto/input/tarea.input.dto';
 import { TareaOutputDto } from '../dto/output/tarea.output.dto';
+import { AgendaOutputDto } from '../dto/output/agenda.output.dto';
+import { AgendaInputDto } from '../dto/input/agenda.input.dto';
 
 @Injectable()
 export class NotionService {
@@ -96,10 +98,49 @@ export class NotionService {
       .sort((a, b) => a.horaInicio.localeCompare(b.horaInicio));
   }
 
+  async getAgendaDeHoy(): Promise<AgendaOutputDto[]> {
+    const dataSourceId = await this.getDataSourceId(
+      this.configService.getOrThrow<string>('NOTION_DB_AGENDA'),
+    );
+    const fecha = this.fechaDeHoy();
+
+    const pages = await collectPaginatedAPI(this.notion.dataSources.query, {
+      data_source_id: dataSourceId,
+      filter: {
+        property: 'Fecha_Calendario',
+        date: { equals: fecha },
+      },
+    });
+
+    return pages.filter(isFullPage).map((page) => this.toAgendaDto(page));
+  }
+
+  private toAgendaDto(page: AgendaInputDto): AgendaOutputDto {
+    const nombre = page.properties.Nombre;
+    const horaInicio = page.properties.Hora_Inicio;
+    const horaFin = page.properties.Hora_Fin;
+
+    return {
+      id: page.id,
+      nombre:
+        nombre?.type === 'rich_text' && nombre.rich_text
+          ? nombre.rich_text.map((text) => text.plain_text).join('')
+          : '',
+      horaInicio:
+        horaInicio?.type === 'rich_text' && horaInicio.rich_text
+          ? horaInicio.rich_text.map((text) => text.plain_text).join('')
+          : '',
+      horaFin:
+        horaFin?.type === 'rich_text' && horaFin.rich_text
+          ? horaFin.rich_text.map((text) => text.plain_text).join('')
+          : '',
+    };
+  }
+
   async crearAgenda(
     tipoDiaId: string,
     actividades: PlantillaActividadOutputDto[],
-  ): Promise<void> {
+  ): Promise<AgendaOutputDto[]> {
     const dataSourceId = await this.getDataSourceId(
       this.configService.getOrThrow<string>('NOTION_DB_AGENDA'),
     );
@@ -132,7 +173,7 @@ export class NotionService {
       return items.map((item) => ({ item, tipoActividadIds }));
     });
 
-    await Promise.all(
+    const paginas = await Promise.all(
       registros.map(({ item, tipoActividadIds }) =>
         this.notion.pages.create({
           parent: { data_source_id: dataSourceId },
@@ -162,19 +203,25 @@ export class NotionService {
         }),
       ),
     );
+
+    return paginas.map((pagina, indice) => ({
+      id: pagina.id,
+      nombre: registros[indice].item.nombre,
+      horaInicio: registros[indice].item.horaInicio,
+      horaFin: registros[indice].item.horaFin,
+    }));
   }
 
   async registrarEventoBitacora(
     agendaId: string,
     nombreActividad: string,
     estado: string,
+    desvioMin?: number,
   ): Promise<void> {
     const dataSourceId = await this.getDataSourceId(
       this.configService.getOrThrow<string>('NOTION_DB_BITACORA'),
     );
     const fecha = this.fechaDeHoy();
-    const orden =
-      (await this.contarEventosBitacora(dataSourceId, agendaId)) + 1;
 
     await this.notion.pages.create({
       parent: { data_source_id: dataSourceId },
@@ -194,26 +241,11 @@ export class NotionService {
         Hora: {
           rich_text: [{ text: { content: this.horaDeAhora() } }],
         },
-        Orden: {
-          number: orden,
+        Desvio_Min: {
+          number: desvioMin ?? null,
         },
       },
     });
-  }
-
-  private async contarEventosBitacora(
-    dataSourceId: string,
-    agendaId: string,
-  ): Promise<number> {
-    const pages = await collectPaginatedAPI(this.notion.dataSources.query, {
-      data_source_id: dataSourceId,
-      filter: {
-        property: 'Agenda',
-        relation: { contains: agendaId },
-      },
-    });
-
-    return pages.length;
   }
 
   private fechaDeHoy(): string {

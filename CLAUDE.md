@@ -39,11 +39,35 @@ This is the backend for "Galatea", a personal productivity system: Notion holds 
 
 - `PREPARAR_DESAYUNO` / `PREPARAR_ALMUERZO` / `PREPARAR_CENA` → looks up today's dish in `Menu_Semana` (one row per weekday, fixed weekly menu) via `CONFIG_MENU_POR_TIPO_ACTIVIDAD`, prefixed with `"preparar: "`.
 - `LIMPIEZA_MANTENIMIENTO` → same `Menu_Semana` row, `Limpieza` column, no prefix.
-- `OFICINA` / `TALLER` → pulls eligible Tareas for that `Contexto` (via `CONTEXTO_POR_TIPO_ACTIVIDAD`) and lays them out as a mini-schedule inside the block, starting at the block's own `horaInicio` and stacking each task's `Tiempo_Estimado`.
+- `OFICINA` / `TALLER` → pulls eligible Tareas for that `Contexto` (via `CONTEXTO_POR_TIPO_ACTIVIDAD`) and lays them out as a mini-schedule inside the block (`PlantillaActividadOutputDto.tareas`), starting at the block's own `horaInicio`, stacking each task's `Tiempo_Estimado`, and capped at the block's real `horaFin` (`formatearTareasConHorario` — tasks that don't fit before the block ends are silently left for another day, not overflowed past midnight).
 
-A task is "eligible" (`tareasElegibles`) if its `Estado` isn't `Completado` and everything in its `Depende_De` self-relation is already `Completado` — this models real task dependencies (can't do task B before task A it depends on).
+A task is "eligible" (`tareasElegibles`) if its `Estado` isn't `Completado` **and** every task in its `Depende_De` self-relation is resolvable today — either already `Completado`, or itself eligible and scheduled earlier in the same block (`puedeHacerseHoy` recurses through the chain; `ordenarPorDependencias` does a DFS topological sort so a dependency's row always lands before its dependent's). A task blocked on something outside today's eligible set is excluded entirely.
 
-If an activity matches none of these `Tipo_Actividad` values, its original Plantillas_Actividades name is used unchanged — this is a silent fallback by design, not a bug, so a wrong assumption about Notion property names shows up as "generic name instead of resolved content", not a thrown error.
+If an activity matches none of the `Tipo_Actividad` values above, its original Plantillas_Actividades name is used unchanged — this is a silent fallback by design, not a bug, so a wrong assumption about Notion property names shows up as "generic name instead of resolved content", not a thrown error.
+
+### Writing back to Notion: Agenda and Bitácora
+
+Validating a day (`Validar` button → `onValidacion`) doesn't just confirm — it materializes the resolved schedule into two more Notion databases that the user (not this app) created and whose schema was learned empirically per-table, not assumed:
+
+- **`crearAgenda`**: writes one row per activity into `Agenda`. If an activity has `tareas` (an Oficina/Taller block), it's exploded into **one Agenda row per task** with that task's own start/end, instead of one row for the whole block — so downstream scheduling/reporting operates at the real granularity of what actually happens. Returns the created rows (with their real Notion page IDs) as `AgendaOutputDto[]`, which is what the scheduler consumes.
+- **`registrarEventoBitacora`**: append-only — every state change (start confirmed, extended, completed) is a **new** Bitácora row, never an update to a previous one, so the full history survives for later analysis. Takes an optional `desvioMin` (signed minutes vs. the planned time; negative = finished early, positive = ran over/needed extension).
+- **`getAgendaDeHoy`**: re-reads today's Agenda from Notion (filtered by `Fecha_Calendario`) — used by `/restartjob` to recover scheduler state without restarting the process, since nothing about "today's plan" lives only in memory.
+
+Gotcha seen repeatedly while wiring these two tables: which property is the **title** vs. a plain **rich_text** column is not consistent across tables and cannot be assumed from the property's name — `Agenda` has `Fecha` as title and `Nombre` as rich_text (the opposite of what you'd guess), `Bitácora` the same. Always confirm per-table before writing `pages.create`.
+
+### Scheduler module (`src/scheduler/`) — sequential handoff, not independent timers
+
+`SchedulerService` runs the actual day: after validation, it does **not** schedule every Agenda row at its own fixed clock time. Only the first (chronologically) item gets an absolute timer (`arrancarPrimeraDeLaCola`, via `@nestjs/schedule`'s `SchedulerRegistry.addTimeout`); every subsequent item is a plain in-memory queue (`colaDelDia`) that only starts once the previous one is resolved. This is intentional: if an activity runs long, everything after it should slide later; if it finishes early, the next one should start immediately rather than idle until its "planned" time.
+
+Per-activity lifecycle:
+1. **Inicio**: at the scheduled time, sends "¿Arrancaste con: X?" (`inicioconfirm:<agendaId>`) — does **not** touch Bitácora yet, because arriving doesn't mean the user saw or started it. If unconfirmed, the same message is re-sent every `RETRY_INTERVAL_MIN` minutes (`programarRecordatorio`) until confirmed.
+2. Confirming (`confirmarInicio`) writes the `'En Progreso'` Bitácora event and schedules the **fin** checkpoint at the activity's `horaFin`.
+3. **Fin checkpoint**: sends "✅ Completado" / "⏱ Extender" (two-step: choosing Extender edits the message into a 15m/30m/1h submenu, `finextender:<agendaId>:<min>`). Completado logs `'Completado'` with the real deviation and immediately pulls the next item off `colaDelDia` (`arrancarSiguienteInmediato` — no delay). Extender reschedules the same checkpoint further out and logs an `'En Progreso'` event noting the extension; the queue does not advance.
+4. **`/listo`** command: an escape hatch to mark the currently in-progress activity done from anywhere, without waiting for its checkpoint to fire — this is how "finished early" pulls the rest of the day backward.
+
+State (`colaDelDia`, `proximaProgramada`, `pendienteInicio`, `pendienteFin`) lives **only in memory** — a process restart loses it. `programarJornada`/`reiniciarJornada` always start by discarding any Agenda item whose `horaInicio` has already passed (`descartarVencidas`, logged as a warning) rather than firing it immediately; this is deliberate so that `/restartjob` after a crash picks up from "now" instead of replaying the whole missed day. `/jobs` reports the full pipeline state (`activo` = timer running waiting for its clock time, `esperando que confirmes el inicio`, `en progreso`, `en cola`).
+
+`TelegramModule` and `SchedulerModule` import each other (Telegram triggers scheduling after validation; the scheduler sends Telegram messages when jobs fire) — both `@Module()` declarations use `forwardRef()` to resolve this. This was verified by actually booting the app (`nest start`), not just `tsc`, since circular-module wiring mistakes only surface at runtime.
 
 ### Not yet built
 
